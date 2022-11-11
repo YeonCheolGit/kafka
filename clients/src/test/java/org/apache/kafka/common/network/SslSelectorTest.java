@@ -66,7 +66,7 @@ public abstract class SslSelectorTest extends SelectorTest {
 
     @BeforeEach
     public void setUp() throws Exception {
-        File trustStoreFile = File.createTempFile("truststore", ".jks");
+        File trustStoreFile = TestUtils.tempFile("truststore", ".jks");
 
         Map<String, Object> sslServerConfigs = TestSslUtils.createSslConfig(false, true, Mode.SERVER, trustStoreFile, "server");
         this.server = new EchoServer(SecurityProtocol.SSL, sslServerConfigs);
@@ -120,10 +120,7 @@ public abstract class SslSelectorTest extends SelectorTest {
         Selector selector = new Selector(5000, metrics, time, "MetricGroup", channelBuilder, new LogContext());
 
         selector.connect(node, new InetSocketAddress("localhost", server.port), BUFFER_SIZE, BUFFER_SIZE);
-        while (!selector.connected().contains(node))
-            selector.poll(10000L);
-        while (!selector.isChannelReady(node))
-            selector.poll(10000L);
+        NetworkTestUtils.waitForChannelReady(selector, node);
 
         selector.send(createSend(node, request));
 
@@ -252,7 +249,7 @@ public abstract class SslSelectorTest extends SelectorTest {
         MemoryPool pool = new SimpleMemoryPool(900, 900, false, null);
         //the initial channel builder is for clients, we need a server one
         String tlsProtocol = "TLSv1.2";
-        File trustStoreFile = File.createTempFile("truststore", ".jks");
+        File trustStoreFile = TestUtils.tempFile("truststore", ".jks");
         Map<String, Object> sslServerConfigs = new TestSslUtils.SslConfigsBuilder(Mode.SERVER)
                 .tlsProtocol(tlsProtocol)
                 .createNewTrustStore(trustStoreFile)
@@ -365,7 +362,7 @@ public abstract class SslSelectorTest extends SelectorTest {
             boolean muteSocket = false;
 
             public TestSslTransportLayer(String channelId, SelectionKey key, SSLEngine sslEngine,
-                                         ChannelMetadataRegistry metadataRegistry) throws IOException {
+                                         ChannelMetadataRegistry metadataRegistry) {
                 super(channelId, key, sslEngine, metadataRegistry);
                 transportLayers.put(channelId, this);
             }

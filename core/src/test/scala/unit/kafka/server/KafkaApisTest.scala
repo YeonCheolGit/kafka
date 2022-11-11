@@ -23,7 +23,7 @@ import java.util
 import java.util.Arrays.asList
 import java.util.concurrent.TimeUnit
 import java.util.{Collections, Optional, Properties, Random}
-import kafka.api.{ApiVersion, KAFKA_0_10_2_IV0, KAFKA_2_2_IV1, LeaderAndIsr}
+import kafka.api.LeaderAndIsr
 import kafka.cluster.Broker
 import kafka.controller.{ControllerContext, KafkaController}
 import kafka.coordinator.group.GroupCoordinatorConcurrencyTest.{JoinGroupCallback, SyncGroupCallback}
@@ -70,7 +70,6 @@ import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 import org.apache.kafka.common.quota.{ClientQuotaAlteration, ClientQuotaEntity}
 import org.apache.kafka.common.record.FileRecords.TimestampAndOffset
 import org.apache.kafka.common.record._
-import org.apache.kafka.common.replica.ClientMetadata
 import org.apache.kafka.common.requests.FindCoordinatorRequest.CoordinatorType
 import org.apache.kafka.common.requests.MetadataResponse.TopicMetadata
 import org.apache.kafka.common.requests.ProduceResponse.PartitionResponse
@@ -84,15 +83,17 @@ import org.apache.kafka.server.authorizer.{Action, AuthorizationResult, Authoriz
 import org.junit.jupiter.api.Assertions._
 import org.junit.jupiter.api.{AfterEach, Test}
 import org.junit.jupiter.params.ParameterizedTest
-import org.junit.jupiter.params.provider.ValueSource
+import org.junit.jupiter.params.provider.{CsvSource, ValueSource}
 import org.mockito.ArgumentMatchers.{any, anyBoolean, anyDouble, anyInt, anyLong, anyShort, anyString, argThat, isNotNull}
 import org.mockito.Mockito.{mock, reset, times, verify, when}
 import org.mockito.{ArgumentCaptor, ArgumentMatchers, Mockito}
 
 import scala.collection.{Map, Seq, mutable}
 import scala.jdk.CollectionConverters._
-
 import org.apache.kafka.common.message.CreatePartitionsRequestData.CreatePartitionsTopic
+import org.apache.kafka.common.message.CreateTopicsResponseData.CreatableTopicResult
+import org.apache.kafka.server.common.MetadataVersion
+import org.apache.kafka.server.common.MetadataVersion.{IBP_0_10_2_IV0, IBP_2_2_IV1}
 
 class KafkaApisTest {
   private val requestChannel: RequestChannel = mock(classOf[RequestChannel])
@@ -112,7 +113,8 @@ class KafkaApisTest {
   private val zkClient: KafkaZkClient = mock(classOf[KafkaZkClient])
   private val metrics = new Metrics()
   private val brokerId = 1
-  private var metadataCache: MetadataCache = MetadataCache.zkMetadataCache(brokerId)
+  // KRaft tests should override this with a KRaftMetadataCache
+  private var metadataCache: MetadataCache = MetadataCache.zkMetadataCache(brokerId, MetadataVersion.latest())
   private val clientQuotaManager: ClientQuotaManager = mock(classOf[ClientQuotaManager])
   private val clientRequestQuotaManager: ClientRequestQuotaManager = mock(classOf[ClientRequestQuotaManager])
   private val clientControllerQuotaManager: ControllerMutationQuotaManager = mock(classOf[ControllerMutationQuotaManager])
@@ -132,13 +134,12 @@ class KafkaApisTest {
     metrics.close()
   }
 
-  def createKafkaApis(interBrokerProtocolVersion: ApiVersion = ApiVersion.latestVersion,
+  def createKafkaApis(interBrokerProtocolVersion: MetadataVersion = MetadataVersion.latest,
                       authorizer: Option[Authorizer] = None,
                       enableForwarding: Boolean = false,
                       configRepository: ConfigRepository = new MockConfigRepository(),
                       raftSupport: Boolean = false,
                       overrideProperties: Map[String, String] = Map.empty): KafkaApis = {
-
     val properties = if (raftSupport) {
       val properties = TestUtils.createBrokerConfig(brokerId, "")
       properties.put(KafkaConfig.NodeIdProp, brokerId.toString)
@@ -180,7 +181,7 @@ class KafkaApisTest {
     } else {
       ApiKeys.apisForListener(listenerType).asScala.toSet
     }
-    val apiVersionManager = new SimpleApiVersionManager(listenerType, enabledApis)
+    val apiVersionManager = new SimpleApiVersionManager(listenerType, enabledApis, BrokerFeatures.defaultSupportedFeatures())
 
     new KafkaApis(
       metadataSupport = metadataSupport,
@@ -306,8 +307,10 @@ class KafkaApisTest {
         Seq(new AlterConfigsRequest.ConfigEntry("foo", "bar")).asJava))
     val alterConfigsRequest = new AlterConfigsRequest.Builder(configs.asJava, false).build(requestHeader.apiVersion)
 
-    val request = TestUtils.buildRequestWithEnvelope(
-      alterConfigsRequest, kafkaPrincipalSerde, requestChannelMetrics, time.nanoseconds())
+    val startTimeNanos = time.nanoseconds()
+    val queueDurationNanos = 5 * 1000 * 1000
+    val request = TestUtils.buildEnvelopeRequest(
+      alterConfigsRequest, kafkaPrincipalSerde, requestChannelMetrics, startTimeNanos, startTimeNanos + queueDurationNanos)
 
     val capturedResponse: ArgumentCaptor[AlterConfigsResponse] = ArgumentCaptor.forClass(classOf[AlterConfigsResponse])
     val capturedRequest: ArgumentCaptor[RequestChannel.Request] = ArgumentCaptor.forClass(classOf[RequestChannel.Request])
@@ -320,6 +323,8 @@ class KafkaApisTest {
       any()
     )
     assertEquals(Some(request), capturedRequest.getValue.envelope)
+    // the dequeue time of forwarded request should equals to envelop request
+    assertEquals(request.requestDequeueTimeNanos, capturedRequest.getValue.requestDequeueTimeNanos)
     val innerResponse = capturedResponse.getValue
     val responseMap = innerResponse.data.responses().asScala.map { resourceResponse =>
       resourceResponse.resourceName() -> Errors.forCode(resourceResponse.errorCode)
@@ -340,7 +345,7 @@ class KafkaApisTest {
 
     when(controller.isActive).thenReturn(true)
 
-    val request = TestUtils.buildRequestWithEnvelope(
+    val request = TestUtils.buildEnvelopeRequest(
       leaveGroupRequest, kafkaPrincipalSerde, requestChannelMetrics, time.nanoseconds())
     when(clientRequestQuotaManager.maybeRecordAndGetThrottleTimeMs(any[RequestChannel.Request](),
       any[Long])).thenReturn(0)
@@ -395,8 +400,8 @@ class KafkaApisTest {
     val alterConfigsRequest = new AlterConfigsRequest.Builder(configs.asJava, false)
       .build(requestHeader.apiVersion)
 
-    val request = TestUtils.buildRequestWithEnvelope(
-      alterConfigsRequest, kafkaPrincipalSerde, requestChannelMetrics, time.nanoseconds(), fromPrivilegedListener)
+    val request = TestUtils.buildEnvelopeRequest(
+      alterConfigsRequest, kafkaPrincipalSerde, requestChannelMetrics, time.nanoseconds(), fromPrivilegedListener = fromPrivilegedListener)
 
     val capturedResponse: ArgumentCaptor[AbstractResponse] = ArgumentCaptor.forClass(classOf[AbstractResponse])
     createKafkaApis(authorizer = Some(authorizer), enableForwarding = true).handle(request, RequestLocal.withThreadConfinedCaching)
@@ -767,6 +772,57 @@ class KafkaApisTest {
     testForwardableApi(ApiKeys.CREATE_TOPICS, requestBuilder)
   }
 
+  @ParameterizedTest
+  @CsvSource(value = Array("0,1500", "1500,0", "3000,1000"))
+  def testKRaftControllerThrottleTimeEnforced(
+    controllerThrottleTimeMs: Int,
+    requestThrottleTimeMs: Int
+  ): Unit = {
+    metadataCache = MetadataCache.kRaftMetadataCache(brokerId)
+
+    val topicToCreate = new CreatableTopic()
+      .setName("topic")
+      .setNumPartitions(1)
+      .setReplicationFactor(1.toShort)
+
+    val requestData = new CreateTopicsRequestData()
+    requestData.topics().add(topicToCreate)
+
+    val requestBuilder = new CreateTopicsRequest.Builder(requestData).build()
+    val request = buildRequest(requestBuilder)
+
+    val kafkaApis = createKafkaApis(enableForwarding = true, raftSupport = true)
+    val forwardCallback: ArgumentCaptor[Option[AbstractResponse] => Unit] =
+      ArgumentCaptor.forClass(classOf[Option[AbstractResponse] => Unit])
+
+    when(clientRequestQuotaManager.maybeRecordAndGetThrottleTimeMs(request, time.milliseconds()))
+      .thenReturn(requestThrottleTimeMs)
+
+    kafkaApis.handle(request, RequestLocal.withThreadConfinedCaching)
+
+    verify(forwardingManager).forwardRequest(
+      ArgumentMatchers.eq(request),
+      forwardCallback.capture()
+    )
+
+    val responseData = new CreateTopicsResponseData()
+      .setThrottleTimeMs(controllerThrottleTimeMs)
+    responseData.topics().add(new CreatableTopicResult()
+      .setErrorCode(Errors.THROTTLING_QUOTA_EXCEEDED.code))
+
+    forwardCallback.getValue.apply(Some(new CreateTopicsResponse(responseData)))
+
+    val expectedThrottleTimeMs = math.max(controllerThrottleTimeMs, requestThrottleTimeMs)
+
+    verify(clientRequestQuotaManager).throttle(
+      ArgumentMatchers.eq(request),
+      any[ThrottleCallback](),
+      ArgumentMatchers.eq(expectedThrottleTimeMs)
+    )
+
+    assertEquals(expectedThrottleTimeMs, responseData.throttleTimeMs)
+  }
+
   @Test
   def testCreatePartitionsAuthorization(): Unit = {
     val authorizer: Authorizer = mock(classOf[Authorizer])
@@ -916,6 +972,12 @@ class KafkaApisTest {
   def testCreatePartitionsWithForwarding(): Unit = {
     val requestBuilder = new CreatePartitionsRequest.Builder(new CreatePartitionsRequestData())
     testForwardableApi(ApiKeys.CREATE_PARTITIONS, requestBuilder)
+  }
+
+  @Test
+  def testUpdateFeaturesWithForwarding(): Unit = {
+    val requestBuilder = new UpdateFeaturesRequest.Builder(new UpdateFeaturesRequestData())
+    testForwardableApi(ApiKeys.UPDATE_FEATURES, requestBuilder)
   }
 
   @Test
@@ -1613,7 +1675,7 @@ class KafkaApisTest {
 
       assertEquals(1, response.data.responses.size)
       val topicProduceResponse = response.data.responses.asScala.head
-      assertEquals(1, topicProduceResponse.partitionResponses.size)   
+      assertEquals(1, topicProduceResponse.partitionResponses.size)
       val partitionProduceResponse = topicProduceResponse.partitionResponses.asScala.head
       assertEquals(Errors.INVALID_PRODUCER_EPOCH, Errors.forCode(partitionProduceResponse.errorCode))
     }
@@ -1649,31 +1711,31 @@ class KafkaApisTest {
   @Test
   def shouldThrowUnsupportedVersionExceptionOnHandleAddOffsetToTxnRequestWhenInterBrokerProtocolNotSupported(): Unit = {
     assertThrows(classOf[UnsupportedVersionException],
-      () => createKafkaApis(KAFKA_0_10_2_IV0).handleAddOffsetsToTxnRequest(null, RequestLocal.withThreadConfinedCaching))
+      () => createKafkaApis(IBP_0_10_2_IV0).handleAddOffsetsToTxnRequest(null, RequestLocal.withThreadConfinedCaching))
   }
 
   @Test
   def shouldThrowUnsupportedVersionExceptionOnHandleAddPartitionsToTxnRequestWhenInterBrokerProtocolNotSupported(): Unit = {
     assertThrows(classOf[UnsupportedVersionException],
-      () => createKafkaApis(KAFKA_0_10_2_IV0).handleAddPartitionToTxnRequest(null, RequestLocal.withThreadConfinedCaching))
+      () => createKafkaApis(IBP_0_10_2_IV0).handleAddPartitionToTxnRequest(null, RequestLocal.withThreadConfinedCaching))
   }
 
   @Test
   def shouldThrowUnsupportedVersionExceptionOnHandleTxnOffsetCommitRequestWhenInterBrokerProtocolNotSupported(): Unit = {
     assertThrows(classOf[UnsupportedVersionException],
-      () => createKafkaApis(KAFKA_0_10_2_IV0).handleAddPartitionToTxnRequest(null, RequestLocal.withThreadConfinedCaching))
+      () => createKafkaApis(IBP_0_10_2_IV0).handleAddPartitionToTxnRequest(null, RequestLocal.withThreadConfinedCaching))
   }
 
   @Test
   def shouldThrowUnsupportedVersionExceptionOnHandleEndTxnRequestWhenInterBrokerProtocolNotSupported(): Unit = {
     assertThrows(classOf[UnsupportedVersionException],
-      () => createKafkaApis(KAFKA_0_10_2_IV0).handleEndTxnRequest(null, RequestLocal.withThreadConfinedCaching))
+      () => createKafkaApis(IBP_0_10_2_IV0).handleEndTxnRequest(null, RequestLocal.withThreadConfinedCaching))
   }
 
   @Test
   def shouldThrowUnsupportedVersionExceptionOnHandleWriteTxnMarkersRequestWhenInterBrokerProtocolNotSupported(): Unit = {
     assertThrows(classOf[UnsupportedVersionException],
-      () => createKafkaApis(KAFKA_0_10_2_IV0).handleWriteTxnMarkersRequest(null, RequestLocal.withThreadConfinedCaching))
+      () => createKafkaApis(IBP_0_10_2_IV0).handleWriteTxnMarkersRequest(null, RequestLocal.withThreadConfinedCaching))
   }
 
   @Test
@@ -1758,7 +1820,7 @@ class KafkaApisTest {
   @Test
   def shouldResignCoordinatorsIfStopReplicaReceivedWithDeleteFlagAndLeaderEpoch(): Unit = {
     shouldResignCoordinatorsIfStopReplicaReceivedWithDeleteFlag(
-      LeaderAndIsr.initialLeaderEpoch + 2, deletePartition = true)
+      LeaderAndIsr.InitialLeaderEpoch + 2, deletePartition = true)
   }
 
   @Test
@@ -1776,7 +1838,7 @@ class KafkaApisTest {
   @Test
   def shouldNotResignCoordinatorsIfStopReplicaReceivedWithoutDeleteFlag(): Unit = {
     shouldResignCoordinatorsIfStopReplicaReceivedWithDeleteFlag(
-      LeaderAndIsr.initialLeaderEpoch + 2, deletePartition = false)
+      LeaderAndIsr.InitialLeaderEpoch + 2, deletePartition = false)
   }
 
   def shouldResignCoordinatorsIfStopReplicaReceivedWithDeleteFlag(leaderEpoch: Int,
@@ -2356,12 +2418,13 @@ class KafkaApisTest {
 
     when(replicaManager.getLogConfig(ArgumentMatchers.eq(tp))).thenReturn(None)
 
-    when(replicaManager.fetchMessages(anyLong, anyInt, anyInt, anyInt, anyBoolean,
-      any[Seq[(TopicIdPartition, FetchRequest.PartitionData)]], any[ReplicaQuota],
-      any[Seq[(TopicIdPartition, FetchPartitionData)] => Unit](), any[IsolationLevel],
-      any[Option[ClientMetadata]])
-    ).thenAnswer(invocation => {
-      val callback = invocation.getArgument(7).asInstanceOf[Seq[(TopicIdPartition, FetchPartitionData)] => Unit]
+    when(replicaManager.fetchMessages(
+      any[FetchParams],
+      any[Seq[(TopicIdPartition, FetchRequest.PartitionData)]],
+      any[ReplicaQuota],
+      any[Seq[(TopicIdPartition, FetchPartitionData)] => Unit]()
+    )).thenAnswer(invocation => {
+      val callback = invocation.getArgument(3).asInstanceOf[Seq[(TopicIdPartition, FetchPartitionData)] => Unit]
       val records = MemoryRecords.withRecords(CompressionType.NONE,
         new SimpleRecord(timestamp, "foo".getBytes(StandardCharsets.UTF_8)))
       callback(Seq(tidp -> FetchPartitionData(Errors.NONE, hw, 0, records,
@@ -2782,7 +2845,7 @@ class KafkaApisTest {
 
     val requestChannelRequest = buildRequest(joinGroupRequest)
 
-    createKafkaApis(KAFKA_2_2_IV1).handleJoinGroupRequest(requestChannelRequest, RequestLocal.withThreadConfinedCaching)
+    createKafkaApis(IBP_2_2_IV1).handleJoinGroupRequest(requestChannelRequest, RequestLocal.withThreadConfinedCaching)
 
     val capturedResponse = verifyNoThrottling(requestChannelRequest)
     val response = capturedResponse.getValue.asInstanceOf[JoinGroupResponse]
@@ -2801,7 +2864,7 @@ class KafkaApisTest {
 
     val requestChannelRequest = buildRequest(syncGroupRequest)
 
-    createKafkaApis(KAFKA_2_2_IV1).handleSyncGroupRequest(requestChannelRequest, RequestLocal.withThreadConfinedCaching)
+    createKafkaApis(IBP_2_2_IV1).handleSyncGroupRequest(requestChannelRequest, RequestLocal.withThreadConfinedCaching)
 
     val capturedResponse = verifyNoThrottling(requestChannelRequest)
     val response = capturedResponse.getValue.asInstanceOf[SyncGroupResponse]
@@ -2819,7 +2882,7 @@ class KafkaApisTest {
     ).build()
     val requestChannelRequest = buildRequest(heartbeatRequest)
 
-    createKafkaApis(KAFKA_2_2_IV1).handleHeartbeatRequest(requestChannelRequest)
+    createKafkaApis(IBP_2_2_IV1).handleHeartbeatRequest(requestChannelRequest)
 
     val capturedResponse = verifyNoThrottling(requestChannelRequest)
     val response = capturedResponse.getValue.asInstanceOf[HeartbeatResponse]
@@ -2849,7 +2912,7 @@ class KafkaApisTest {
 
     val requestChannelRequest = buildRequest(offsetCommitRequest)
 
-    createKafkaApis(KAFKA_2_2_IV1).handleOffsetCommitRequest(requestChannelRequest, RequestLocal.withThreadConfinedCaching)
+    createKafkaApis(IBP_2_2_IV1).handleOffsetCommitRequest(requestChannelRequest, RequestLocal.withThreadConfinedCaching)
 
     val expectedTopicErrors = Collections.singletonList(
       new OffsetCommitResponseData.OffsetCommitResponseTopic()
@@ -2944,12 +3007,13 @@ class KafkaApisTest {
 
     val records = MemoryRecords.withRecords(CompressionType.NONE,
       new SimpleRecord(1000, "foo".getBytes(StandardCharsets.UTF_8)))
-    when(replicaManager.fetchMessages(anyLong, anyInt, anyInt, anyInt, anyBoolean,
-      any[Seq[(TopicIdPartition, FetchRequest.PartitionData)]], any[ReplicaQuota],
-      any[Seq[(TopicIdPartition, FetchPartitionData)] => Unit](), any[IsolationLevel],
-      any[Option[ClientMetadata]])
-    ).thenAnswer(invocation => {
-      val callback = invocation.getArgument(7).asInstanceOf[Seq[(TopicIdPartition, FetchPartitionData)] => Unit]
+    when(replicaManager.fetchMessages(
+      any[FetchParams],
+      any[Seq[(TopicIdPartition, FetchRequest.PartitionData)]],
+      any[ReplicaQuota],
+      any[Seq[(TopicIdPartition, FetchPartitionData)] => Unit]()
+    )).thenAnswer(invocation => {
+      val callback = invocation.getArgument(3).asInstanceOf[Seq[(TopicIdPartition, FetchPartitionData)] => Unit]
       callback(Seq(tidp0 -> FetchPartitionData(Errors.NONE, hw, 0, records,
         None, None, None, Option.empty, isReassignmentFetch = isReassigning)))
     })
@@ -2976,7 +3040,6 @@ class KafkaApisTest {
     else
       assertEquals(0, brokerTopicStats.allTopicsStats.reassignmentBytesOutPerSec.get.count())
     assertEquals(records.sizeInBytes(), brokerTopicStats.allTopicsStats.replicationBytesOutRate.get.count())
-
   }
 
   @Test
@@ -2991,7 +3054,7 @@ class KafkaApisTest {
 
     val requestChannelRequest = buildRequest(initProducerIdRequest)
 
-    createKafkaApis(KAFKA_2_2_IV1).handleInitProducerIdRequest(requestChannelRequest, RequestLocal.withThreadConfinedCaching)
+    createKafkaApis(IBP_2_2_IV1).handleInitProducerIdRequest(requestChannelRequest, RequestLocal.withThreadConfinedCaching)
 
     val capturedResponse = verifyNoThrottling(requestChannelRequest)
     val response = capturedResponse.getValue.asInstanceOf[InitProducerIdResponse]
@@ -3009,7 +3072,7 @@ class KafkaApisTest {
     ).build()
     val requestChannelRequest = buildRequest(initProducerIdRequest)
 
-    createKafkaApis(KAFKA_2_2_IV1).handleInitProducerIdRequest(requestChannelRequest, RequestLocal.withThreadConfinedCaching)
+    createKafkaApis(IBP_2_2_IV1).handleInitProducerIdRequest(requestChannelRequest, RequestLocal.withThreadConfinedCaching)
 
     val capturedResponse = verifyNoThrottling(requestChannelRequest)
     val response = capturedResponse.getValue.asInstanceOf[InitProducerIdResponse]
@@ -3094,7 +3157,7 @@ class KafkaApisTest {
         .setLeader(0)
         .setLeaderEpoch(1)
         .setIsr(asList(0, 1))
-        .setZkVersion(2)
+        .setPartitionEpoch(2)
         .setReplicas(asList(0, 1, 2))
         .setIsNew(false)
     ).asJava

@@ -229,6 +229,27 @@ class MetricsTest extends KafkaServerTestHarness with Logging {
     assertEquals(metrics.keySet.asScala.count(_.getMBeanName == "kafka.controller:type=KafkaController,name=FencedBrokerCount"), 1)
   }
 
+  @ParameterizedTest(name = TestInfoUtils.TestWithParameterizedQuorumName)
+  @ValueSource(strings = Array("kraft"))
+  def testKRaftControllerMetrics(quorum: String): Unit = {
+    val metrics = KafkaYammerMetrics.defaultRegistry.allMetrics
+    Set(
+      "kafka.controller:type=KafkaController,name=ActiveControllerCount",
+      "kafka.controller:type=KafkaController,name=GlobalPartitionCount",
+      "kafka.controller:type=KafkaController,name=GlobalTopicCount",
+      "kafka.controller:type=KafkaController,name=LastAppliedRecordLagMs",
+      "kafka.controller:type=KafkaController,name=LastAppliedRecordOffset",
+      "kafka.controller:type=KafkaController,name=LastAppliedRecordTimestamp",
+      "kafka.controller:type=KafkaController,name=LastCommittedRecordOffset",
+      "kafka.controller:type=KafkaController,name=MetadataErrorCount",
+      "kafka.controller:type=KafkaController,name=OfflinePartitionsCount",
+      "kafka.controller:type=KafkaController,name=PreferredReplicaImbalanceCount",
+    ).foreach(expected => {
+      assertEquals(1, metrics.keySet.asScala.count(_.getMBeanName.equals(expected)),
+        s"Unable to find ${expected}")
+    })
+  }
+
   /**
    * Test that the metrics are created with the right name, testZooKeeperStateChangeRateMetrics
    * and testZooKeeperSessionStateMetric in ZooKeeperClientTest test the metrics behaviour.

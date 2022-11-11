@@ -416,7 +416,9 @@ public class StreamThreadStateStoreProviderTest {
                 clientSupplier.adminClient,
                 clientSupplier.restoreConsumer,
                 new MockStateRestoreListener()),
-            topology.storeToChangelogTopic(), partitions);
+            topology.storeToChangelogTopic(),
+            partitions,
+            false);
         final RecordCollector recordCollector = new RecordCollectorImpl(
             logContext,
             taskId,
@@ -430,7 +432,9 @@ public class StreamThreadStateStoreProviderTest {
                 Time.SYSTEM
             ),
             streamsConfig.defaultProductionExceptionHandler(),
-            new MockStreamsMetrics(metrics));
+            new MockStreamsMetrics(metrics),
+            topology
+        );
         final StreamsMetricsImpl streamsMetrics = new MockStreamsMetrics(metrics);
         final InternalProcessorContext context = new ProcessorContextImpl(
             taskId,

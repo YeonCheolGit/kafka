@@ -39,8 +39,8 @@ class ControllerConfigurationValidatorTest {
 
   @Test
   def testInvalidTopicNameRejected(): Unit = {
-    assertEquals("Topic name \"(<-invalid->)\" is illegal, it contains a character " +
-      "other than ASCII alphanumerics, '.', '_' and '-'",
+    assertEquals("Topic name is invalid: '(<-invalid->)' contains " +
+      "one or more characters other than ASCII alphanumerics, '.', '_' and '-'",
         assertThrows(classOf[InvalidTopicException], () => validator.validate(
           new ConfigResource(TOPIC, "(<-invalid->)"), emptyMap())). getMessage())
   }
@@ -58,8 +58,8 @@ class ControllerConfigurationValidatorTest {
     config.put(SEGMENT_JITTER_MS_CONFIG, "10")
     config.put(SEGMENT_BYTES_CONFIG, null)
     config.put(SEGMENT_MS_CONFIG, null)
-    assertEquals("Null value not supported for topic configs : segment.bytes,segment.ms",
-      assertThrows(classOf[InvalidRequestException], () => validator.validate(
+    assertEquals("Null value not supported for topic configs: segment.bytes,segment.ms",
+      assertThrows(classOf[InvalidConfigurationException], () => validator.validate(
         new ConfigResource(TOPIC, "foo"), config)). getMessage())
   }
 

@@ -16,6 +16,7 @@
  */
 package org.apache.kafka.streams;
 
+import java.util.Set;
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -32,9 +33,11 @@ import org.apache.kafka.streams.errors.StreamsException;
 import org.apache.kafka.streams.processor.FailOnInvalidTimestamp;
 import org.apache.kafka.streams.processor.TimestampExtractor;
 import org.apache.kafka.streams.processor.internals.StreamsPartitionAssignor;
-import org.apache.kafka.streams.processor.internals.testutil.LogCaptureAppender;
+import org.apache.kafka.common.utils.LogCaptureAppender;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.Timeout;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
@@ -78,7 +81,8 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public class StreamsConfigTest {
-
+    @Rule
+    public Timeout globalTimeout = Timeout.seconds(600);
     private final Properties props = new Properties();
     private StreamsConfig streamsConfig;
 
@@ -1281,6 +1285,87 @@ public class StreamsConfigTest {
     public void shouldUseDefaultStateStoreCacheMaxBytesConfigWhenNoConfigIsSet() {
         final StreamsConfig config = new StreamsConfig(props);
         assertEquals(getTotalCacheSize(config), 10 * 1024 * 1024);
+    }
+
+    @Test
+    public void testInvalidSecurityProtocol() {
+        props.put(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG, "abc");
+        final ConfigException ce = assertThrows(ConfigException.class,
+                () -> new StreamsConfig(props));
+        assertTrue(ce.getMessage().contains(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG));
+    }
+
+    @Test
+    public void shouldThrowExceptionWhenTopologyOptimizationOnAndOff() {
+        final String value = String.join(",", StreamsConfig.OPTIMIZE, StreamsConfig.NO_OPTIMIZATION);
+        props.put(TOPOLOGY_OPTIMIZATION_CONFIG, value);
+        final ConfigException exception = assertThrows(ConfigException.class, () -> new StreamsConfig(props));
+        assertTrue(exception.getMessage().contains("is not a valid optimization config"));
+    }
+
+    @Test
+    public void shouldThrowExceptionWhenTopologyOptimizationOffAndSet() {
+        final String value = String.join(",", StreamsConfig.NO_OPTIMIZATION, StreamsConfig.REUSE_KTABLE_SOURCE_TOPICS);
+        props.put(TOPOLOGY_OPTIMIZATION_CONFIG, value);
+        final ConfigException exception = assertThrows(ConfigException.class, () -> new StreamsConfig(props));
+        assertTrue(exception.getMessage().contains("is not a valid optimization config"));
+    }
+
+    @Test
+    public void shouldThrowExceptionWhenOptimizationDoesNotExistInList() {
+        final String value = String.join(",",
+                                         StreamsConfig.REUSE_KTABLE_SOURCE_TOPICS,
+                                         "topology.optimization.does.not.exist",
+                                         StreamsConfig.MERGE_REPARTITION_TOPICS);
+        props.put(TOPOLOGY_OPTIMIZATION_CONFIG, value);
+        final ConfigException exception = assertThrows(ConfigException.class, () -> new StreamsConfig(props));
+        assertTrue(exception.getMessage().contains("Unrecognized config."));
+    }
+
+    @Test
+    public void shouldThrowExceptionWhenTopologyOptimizationDoesNotExist() {
+        final String value = String.join(",", "topology.optimization.does.not.exist");
+        props.put(TOPOLOGY_OPTIMIZATION_CONFIG, value);
+        final ConfigException exception = assertThrows(ConfigException.class, () -> new StreamsConfig(props));
+        assertTrue(exception.getMessage().contains("Unrecognized config."));
+    }
+
+    @Test
+    public void shouldEnableSelfJoin() {
+        final String value = StreamsConfig.SINGLE_STORE_SELF_JOIN;
+        props.put(TOPOLOGY_OPTIMIZATION_CONFIG, value);
+        final StreamsConfig config = new StreamsConfig(props);
+        assertEquals(config.getString(TOPOLOGY_OPTIMIZATION_CONFIG), StreamsConfig.SINGLE_STORE_SELF_JOIN);
+    }
+
+    @Test
+    public void shouldAllowMultipleOptimizations() {
+        final String value = String.join(",",
+                                         StreamsConfig.SINGLE_STORE_SELF_JOIN,
+                                         StreamsConfig.REUSE_KTABLE_SOURCE_TOPICS,
+                                         StreamsConfig.MERGE_REPARTITION_TOPICS);
+        props.put(TOPOLOGY_OPTIMIZATION_CONFIG, value);
+        final StreamsConfig config = new StreamsConfig(props);
+        final List<String> configs = Arrays.asList(config.getString(TOPOLOGY_OPTIMIZATION_CONFIG).split(","));
+        assertEquals(3, configs.size());
+        assertTrue(configs.contains(StreamsConfig.SINGLE_STORE_SELF_JOIN));
+        assertTrue(configs.contains(StreamsConfig.REUSE_KTABLE_SOURCE_TOPICS));
+        assertTrue(configs.contains(StreamsConfig.MERGE_REPARTITION_TOPICS));
+    }
+
+    @Test
+    public void shouldEnableAllOptimizationsWithOptimizeConfig() {
+        final Set<String> configs = StreamsConfig.verifyTopologyOptimizationConfigs(StreamsConfig.OPTIMIZE);
+        assertEquals(3, configs.size());
+        assertTrue(configs.contains(StreamsConfig.REUSE_KTABLE_SOURCE_TOPICS));
+        assertTrue(configs.contains(StreamsConfig.MERGE_REPARTITION_TOPICS));
+        assertTrue(configs.contains(StreamsConfig.SINGLE_STORE_SELF_JOIN));
+    }
+
+    @Test
+    public void shouldNotEnableAnyOptimizationsWithNoOptimizationConfig() {
+        final Set<String> configs = StreamsConfig.verifyTopologyOptimizationConfigs(StreamsConfig.NO_OPTIMIZATION);
+        assertEquals(0, configs.size());
     }
 
     static class MisconfiguredSerde implements Serde<Object> {

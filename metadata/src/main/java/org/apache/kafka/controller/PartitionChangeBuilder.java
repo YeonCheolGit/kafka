@@ -32,7 +32,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.function.Function;
 
-import static org.apache.kafka.common.metadata.MetadataRecordType.PARTITION_CHANGE_RECORD;
 import static org.apache.kafka.metadata.LeaderConstants.NO_LEADER;
 import static org.apache.kafka.metadata.LeaderConstants.NO_LEADER_CHANGE;
 
@@ -48,6 +47,7 @@ public class PartitionChangeBuilder {
         if (record.replicas() != null) return false;
         if (record.removingReplicas() != null) return false;
         if (record.addingReplicas() != null) return false;
+        if (record.leaderRecoveryState() != LeaderRecoveryState.NO_CHANGE) return false;
         return true;
     }
 
@@ -243,7 +243,7 @@ public class PartitionChangeBuilder {
      * We need to bump the leader epoch if:
      * 1. The leader changed, or
      * 2. The new ISR does not contain all the nodes that the old ISR did, or
-     * 3. The new replia list does not contain all the nodes that the old replia list did.
+     * 3. The new replica list does not contain all the nodes that the old replica list did.
      *
      * Changes that do NOT fall in any of these categories will increase the partition epoch, but
      * not the leader epoch. Note that if the leader epoch increases, the partition epoch will
@@ -326,8 +326,7 @@ public class PartitionChangeBuilder {
         if (changeRecordIsNoOp(record)) {
             return Optional.empty();
         } else {
-            return Optional.of(new ApiMessageAndVersion(record,
-                PARTITION_CHANGE_RECORD.highestSupportedVersion()));
+            return Optional.of(new ApiMessageAndVersion(record, (short) 0));
         }
     }
 
