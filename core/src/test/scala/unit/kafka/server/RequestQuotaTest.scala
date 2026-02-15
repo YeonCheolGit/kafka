@@ -31,7 +31,7 @@ import org.apache.kafka.common.message._
 import org.apache.kafka.common.metrics.{KafkaMetric, Quota, Sensor}
 import org.apache.kafka.common.protocol.ApiKeys
 import org.apache.kafka.common.quota.ClientQuotaFilter
-import org.apache.kafka.common.record._
+import org.apache.kafka.common.record.internal._
 import org.apache.kafka.common.requests._
 import org.apache.kafka.common.resource.{PatternType, ResourceType => AdminResourceType}
 import org.apache.kafka.common.security.auth._
@@ -746,10 +746,10 @@ class RequestQuotaTest extends BaseRequestTest {
           new ReadShareGroupStateSummaryRequest.Builder(new ReadShareGroupStateSummaryRequestData())
           
         case ApiKeys.STREAMS_GROUP_HEARTBEAT =>
-          new StreamsGroupHeartbeatRequest.Builder(new StreamsGroupHeartbeatRequestData(), true)
+          new StreamsGroupHeartbeatRequest.Builder(new StreamsGroupHeartbeatRequestData())
 
         case ApiKeys.STREAMS_GROUP_DESCRIBE =>
-          new StreamsGroupDescribeRequest.Builder(new StreamsGroupDescribeRequestData(), true)
+          new StreamsGroupDescribeRequest.Builder(new StreamsGroupDescribeRequestData())
 
         case ApiKeys.DESCRIBE_SHARE_GROUP_OFFSETS =>
           new DescribeShareGroupOffsetsRequest.Builder(new DescribeShareGroupOffsetsRequestData())

@@ -22,8 +22,8 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.compress.Compression;
 import org.apache.kafka.common.errors.TopicDeletionDisabledException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
-import org.apache.kafka.common.record.MemoryRecords;
-import org.apache.kafka.common.record.SimpleRecord;
+import org.apache.kafka.common.record.internal.MemoryRecords;
+import org.apache.kafka.common.record.internal.SimpleRecord;
 import org.apache.kafka.common.test.ClusterInstance;
 import org.apache.kafka.common.test.api.ClusterConfigProperty;
 import org.apache.kafka.common.test.api.ClusterTest;
@@ -365,7 +365,8 @@ public class DeleteTopicTest {
                     0,
                     AppendOrigin.CLIENT,
                     RequestLocal.noCaching(),
-                    VerificationGuard.SENTINEL
+                    VerificationGuard.SENTINEL,
+                    (short) 0
                 );
                 counter++;
                 result.add(new int[] {key, count});

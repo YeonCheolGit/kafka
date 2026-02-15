@@ -18,7 +18,7 @@
 package org.apache.kafka.image.loader;
 
 import org.apache.kafka.common.message.KRaftVersionRecord;
-import org.apache.kafka.common.record.ControlRecordType;
+import org.apache.kafka.common.record.internal.ControlRecordType;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.image.MetadataDelta;
@@ -120,7 +120,8 @@ public class MetadataLoader implements RaftClient.Listener<ApiMessageAndVersion>
                 throw new RuntimeException("You must set the high water mark accessor.");
             }
             if (metrics == null) {
-                metrics = new MetadataLoaderMetrics(Optional.empty(),
+                metrics = new MetadataLoaderMetrics(
+                    Optional.empty(),
                     __ -> { },
                     __ -> { },
                     new AtomicReference<>(MetadataProvenance.EMPTY));
@@ -217,10 +218,11 @@ public class MetadataLoader implements RaftClient.Listener<ApiMessageAndVersion>
             faultHandler,
             this::maybePublishMetadata);
         this.eventQueue = new KafkaEventQueue(
-            Time.SYSTEM,
+            time,
             logContext,
             threadNamePrefix + "metadata-loader-",
-            new ShutdownEvent());
+            new ShutdownEvent(),
+            metrics::updateIdleTime);
     }
 
     // VisibleForTesting
